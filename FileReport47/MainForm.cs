@@ -1,11 +1,10 @@
 using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Threading.Tasks;
 using System.Windows.Forms;
-using FileReport47.Models;
+using System.Threading.Tasks;
 using FileReport47.Services;
-using Newtonsoft.Json;
+using System.IO;
+using System.Diagnostics;
+using FileReport47.Models;
 
 namespace FileReport47
 {
@@ -13,19 +12,54 @@ namespace FileReport47
     {
         private readonly FileSearchService _fileSearchService;
         private bool _isSearching;
+        private ResultsForm _resultsForm;
 
         public MainForm()
         {
             InitializeComponent();
             _fileSearchService = new FileSearchService();
-            progressBar.Style = ProgressBarStyle.Blocks;
+        }
+
+        private void chkShowResults_CheckedChanged(object sender, EventArgs e)
+        {
+            if (chkShowResults.Checked)
+            {
+                if (_resultsForm == null || _resultsForm.IsDisposed)
+                {
+                    _resultsForm = new ResultsForm();
+                    _resultsForm.FormClosing += (s, args) => chkShowResults.Checked = false;
+                }
+                _resultsForm.Show();
+            }
+            else
+            {
+                _resultsForm?.Close();
+            }
+        }
+
+        private void UpdateProgress((int matched, int total) progress)
+        {
+            lblProgress.Text = $"Found {progress.matched} files out of {progress.total} scanned...";
+        }
+
+        private void UpdateControlsState(bool searching)
+        {
+            txtSearchPath.Enabled = !searching;
+            txtOutputPath.Enabled = !searching;
+            txtFilters.Enabled = !searching;
+            btnBrowseSearch.Enabled = !searching;
+            btnBrowseOutput.Enabled = !searching;
+            btnSearch.Enabled = !searching;
+            btnCancel.Enabled = searching;
+            chkShowResults.Enabled = !searching;
         }
 
         private void btnBrowseSearch_Click(object sender, EventArgs e)
         {
             using (var dialog = new FolderBrowserDialog())
             {
-                if (dialog.ShowDialog() == DialogResult.OK)
+                dialog.Description = "Select search directory";
+                if (dialog.ShowDialog(this) == DialogResult.OK)
                 {
                     txtSearchPath.Text = dialog.SelectedPath;
                 }
@@ -37,11 +71,55 @@ namespace FileReport47
             using (var dialog = new SaveFileDialog())
             {
                 dialog.Filter = "CSV files (*.csv)|*.csv|All files (*.*)|*.*";
+                dialog.FilterIndex = 1;
                 dialog.DefaultExt = "csv";
-                if (dialog.ShowDialog() == DialogResult.OK)
+                dialog.AddExtension = true;
+                dialog.Title = "Select output file";
+
+                if (dialog.ShowDialog(this) == DialogResult.OK)
                 {
                     txtOutputPath.Text = dialog.FileName;
                 }
+            }
+        }
+
+        private void btnCancel_Click(object sender, EventArgs e)
+        {
+            if (_isSearching)
+            {
+                _fileSearchService.CancelSearch();
+                btnCancel.Enabled = false;
+            }
+        }
+
+        public void LoadSettingsAndSearch(string settingsPath)
+        {
+            if (!File.Exists(settingsPath))
+            {
+                MessageBox.Show(this, $"Error: Settings file not found: {settingsPath}", "Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            try
+            {
+                var serializer = new System.Runtime.Serialization.DataContractSerializer(typeof(SearchParameters));
+                SearchParameters settings;
+                using (var reader = System.Xml.XmlReader.Create(settingsPath))
+                {
+                    settings = (SearchParameters)serializer.ReadObject(reader);
+                }
+
+                txtSearchPath.Text = settings.SearchPath;
+                txtOutputPath.Text = settings.OutputPath;
+                txtFilters.Text = string.Join(";", settings.FileFilters);
+
+                btnSearch.PerformClick();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"Error loading settings: {ex.Message}", "Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -52,14 +130,14 @@ namespace FileReport47
 
             if (string.IsNullOrWhiteSpace(txtSearchPath.Text) || string.IsNullOrWhiteSpace(txtOutputPath.Text))
             {
-                MessageBox.Show("Please specify both search and output paths.", "Validation Error", 
+                MessageBox.Show(this, "Please specify both search and output paths.", "Validation Error",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
             if (!Directory.Exists(txtSearchPath.Text))
             {
-                MessageBox.Show("Search directory does not exist.", "Validation Error", 
+                MessageBox.Show(this, "Search directory does not exist.", "Validation Error",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
@@ -75,30 +153,49 @@ namespace FileReport47
                 {
                     SearchPath = txtSearchPath.Text,
                     OutputPath = txtOutputPath.Text,
-                    FileFilters = new List<string>(txtFilters.Text.Split(new[] { ';' }, 
+                    FileFilters = new System.Collections.Generic.List<string>(txtFilters.Text.Split(new[] { ';' },
                         StringSplitOptions.RemoveEmptyEntries))
                 };
 
-                var progress = new Progress<(int matched, int total)>(p =>
+                var progress = new Progress<(int matched, int total, FileInformation lastFile)>(p =>
                 {
-                    if (this.InvokeRequired)
+                    if (InvokeRequired)
                     {
-                        this.BeginInvoke(new Action(() => UpdateProgress(p)));
+                        BeginInvoke(new Action(() =>
+                        {
+                            UpdateProgress((p.matched, p.total));
+                            if (chkShowResults.Checked && _resultsForm != null && !_resultsForm.IsDisposed && p.lastFile != null)
+                            {
+                                _resultsForm.AddResult(p.lastFile);
+                            }
+                        }));
                     }
                     else
                     {
-                        UpdateProgress(p);
+                        UpdateProgress((p.matched, p.total));
+                        if (chkShowResults.Checked && _resultsForm != null && !_resultsForm.IsDisposed && p.lastFile != null)
+                        {
+                            _resultsForm.AddResult(p.lastFile);
+                        }
                     }
                 });
 
-                await Task.Run(() => _fileSearchService.SearchFilesAsync(parameters, progress));
+                bool completed = await _fileSearchService.SearchFilesAsync(parameters, progress);
 
-                MessageBox.Show("Search completed successfully!", "Success", 
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                if (completed)
+                {
+                    MessageBox.Show(this, "Search completed successfully!", "Success",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else
+                {
+                    MessageBox.Show(this, "Search was cancelled.", "Cancelled",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"An error occurred: {ex.Message}", "Error", 
+                MessageBox.Show(this, $"An error occurred: {ex.Message}", "Error",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
             finally
@@ -110,101 +207,79 @@ namespace FileReport47
             }
         }
 
-        private void UpdateProgress((int matched, int total) progress)
-        {
-            if (this.InvokeRequired)
-            {
-                this.BeginInvoke(new Action(() => UpdateProgress(progress)));
-                return;
-            }
-
-            lblProgress.Text = $"Found {progress.matched} matching files out of {progress.total} processed";
-            Application.DoEvents();
-        }
-
-        private void btnCancel_Click(object sender, EventArgs e)
-        {
-            if (_isSearching)
-            {
-                _fileSearchService.CancelSearch();
-            }
-        }
-
-        private void UpdateControlsState(bool isSearching)
-        {
-            if (this.InvokeRequired)
-            {
-                this.BeginInvoke(new Action(() => UpdateControlsState(isSearching)));
-                return;
-            }
-
-            btnSearch.Enabled = !isSearching;
-            btnCancel.Enabled = isSearching;
-            btnBrowseSearch.Enabled = !isSearching;
-            btnBrowseOutput.Enabled = !isSearching;
-            txtSearchPath.Enabled = !isSearching;
-            txtOutputPath.Enabled = !isSearching;
-            txtFilters.Enabled = !isSearching;
-            btnSaveSettings.Enabled = !isSearching;
-            btnLoadSettings.Enabled = !isSearching;
-        }
-
         private void btnSaveSettings_Click(object sender, EventArgs e)
         {
-            try
+            using (var dialog = new SaveFileDialog())
             {
-                using (var dialog = new SaveFileDialog())
-                {
-                    dialog.Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*";
-                    dialog.DefaultExt = "json";
-                    dialog.Title = "Save Search Settings";
+                dialog.Filter = "XML files (*.xml)|*.xml|All files (*.*)|*.*";
+                dialog.FilterIndex = 1;
+                dialog.DefaultExt = "xml";
+                dialog.AddExtension = true;
+                dialog.Title = "Save Settings";
 
-                    if (dialog.ShowDialog() == DialogResult.OK)
+                if (dialog.ShowDialog(this) == DialogResult.OK)
+                {
+                    try
                     {
                         var settings = new SearchParameters
                         {
                             SearchPath = txtSearchPath.Text,
                             OutputPath = txtOutputPath.Text,
-                            FileFilters = new List<string>(txtFilters.Text.Split(new[] { ';' },
+                            FileFilters = new System.Collections.Generic.List<string>(txtFilters.Text.Split(new[] { ';' },
                                 StringSplitOptions.RemoveEmptyEntries))
                         };
 
-                        File.WriteAllText(dialog.FileName, JsonConvert.SerializeObject(settings, Formatting.Indented));
-                        MessageBox.Show("Settings saved successfully!", "Success",
+                        var serializer = new System.Runtime.Serialization.DataContractSerializer(typeof(SearchParameters));
+                        using (var writer = System.Xml.XmlWriter.Create(dialog.FileName))
+                        {
+                            serializer.WriteObject(writer, settings);
+                        }
+
+                        MessageBox.Show(this, "Settings saved successfully!", "Success",
                             MessageBoxButtons.OK, MessageBoxIcon.Information);
                     }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show(this, $"Error saving settings: {ex.Message}", "Error",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
                 }
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Failed to save settings: {ex.Message}", "Error",
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
         private void btnLoadSettings_Click(object sender, EventArgs e)
         {
-            try
+            using (var dialog = new OpenFileDialog())
             {
-                using (var dialog = new OpenFileDialog())
-                {
-                    dialog.Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*";
-                    dialog.DefaultExt = "json";
-                    dialog.Title = "Load Search Settings";
+                dialog.Filter = "XML files (*.xml)|*.xml|All files (*.*)|*.*";
+                dialog.FilterIndex = 1;
+                dialog.DefaultExt = "xml";
+                dialog.Title = "Load Settings";
 
-                    if (dialog.ShowDialog() == DialogResult.OK)
+                if (dialog.ShowDialog(this) == DialogResult.OK)
+                {
+                    try
                     {
-                        var settings = JsonConvert.DeserializeObject<SearchParameters>(File.ReadAllText(dialog.FileName));
+                        var serializer = new System.Runtime.Serialization.DataContractSerializer(typeof(SearchParameters));
+                        SearchParameters settings;
+                        using (var reader = System.Xml.XmlReader.Create(dialog.FileName))
+                        {
+                            settings = (SearchParameters)serializer.ReadObject(reader);
+                        }
+
                         txtSearchPath.Text = settings.SearchPath;
                         txtOutputPath.Text = settings.OutputPath;
                         txtFilters.Text = string.Join(";", settings.FileFilters);
+
+                        MessageBox.Show(this, "Settings loaded successfully!", "Success",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show(this, $"Error loading settings: {ex.Message}", "Error",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error);
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Failed to load settings: {ex.Message}", "Error",
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
     }

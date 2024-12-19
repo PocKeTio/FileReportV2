@@ -15,6 +15,7 @@ namespace FileReport47
 
         private void InitializeComponent()
         {
+            this.components = new System.ComponentModel.Container();
             this.txtSearchPath = new System.Windows.Forms.TextBox();
             this.txtOutputPath = new System.Windows.Forms.TextBox();
             this.txtFilters = new System.Windows.Forms.TextBox();
@@ -29,7 +30,8 @@ namespace FileReport47
             this.label1 = new System.Windows.Forms.Label();
             this.label2 = new System.Windows.Forms.Label();
             this.label3 = new System.Windows.Forms.Label();
-            this.toolTip1 = new System.Windows.Forms.ToolTip();
+            this.toolTip1 = new System.Windows.Forms.ToolTip(this.components);
+            this.chkShowResults = new System.Windows.Forms.CheckBox();
             this.SuspendLayout();
             // 
             // txtSearchPath
@@ -45,7 +47,8 @@ namespace FileReport47
             this.txtOutputPath.Name = "txtOutputPath";
             this.txtOutputPath.Size = new System.Drawing.Size(379, 20);
             this.txtOutputPath.TabIndex = 1;
-            this.toolTip1.SetToolTip(this.txtOutputPath, "You can use date patterns in the path: {yyyy-MM-dd}, {HH-mm-ss}\nExample: C:\\Reports\\FileReport_{yyyy-MM-dd}.csv");
+            this.toolTip1.SetToolTip(this.txtOutputPath, "You can use date patterns in the path: {yyyy-MM-dd}, {HH-mm-ss}\nExample: C:\\Repor" +
+        "ts\\FileReport_{yyyy-MM-dd}.csv");
             // 
             // txtFilters
             // 
@@ -74,7 +77,7 @@ namespace FileReport47
             // 
             // btnSearch
             // 
-            this.btnSearch.Location = new System.Drawing.Point(12, 161);
+            this.btnSearch.Location = new System.Drawing.Point(316, 249);
             this.btnSearch.Name = "btnSearch";
             this.btnSearch.Size = new System.Drawing.Size(75, 23);
             this.btnSearch.TabIndex = 5;
@@ -84,7 +87,7 @@ namespace FileReport47
             // btnCancel
             // 
             this.btnCancel.Enabled = false;
-            this.btnCancel.Location = new System.Drawing.Point(93, 161);
+            this.btnCancel.Location = new System.Drawing.Point(397, 249);
             this.btnCancel.Name = "btnCancel";
             this.btnCancel.Size = new System.Drawing.Size(75, 23);
             this.btnCancel.TabIndex = 6;
@@ -93,7 +96,7 @@ namespace FileReport47
             // 
             // progressBar
             // 
-            this.progressBar.Location = new System.Drawing.Point(12, 190);
+            this.progressBar.Location = new System.Drawing.Point(12, 191);
             this.progressBar.Name = "progressBar";
             this.progressBar.Size = new System.Drawing.Size(460, 23);
             this.progressBar.TabIndex = 7;
@@ -101,7 +104,7 @@ namespace FileReport47
             // lblProgress
             // 
             this.lblProgress.AutoSize = true;
-            this.lblProgress.Location = new System.Drawing.Point(12, 216);
+            this.lblProgress.Location = new System.Drawing.Point(12, 226);
             this.lblProgress.Name = "lblProgress";
             this.lblProgress.Size = new System.Drawing.Size(38, 13);
             this.lblProgress.TabIndex = 8;
@@ -109,7 +112,7 @@ namespace FileReport47
             // 
             // btnSaveSettings
             // 
-            this.btnSaveSettings.Location = new System.Drawing.Point(316, 161);
+            this.btnSaveSettings.Location = new System.Drawing.Point(13, 249);
             this.btnSaveSettings.Name = "btnSaveSettings";
             this.btnSaveSettings.Size = new System.Drawing.Size(75, 23);
             this.btnSaveSettings.TabIndex = 9;
@@ -118,7 +121,7 @@ namespace FileReport47
             // 
             // btnLoadSettings
             // 
-            this.btnLoadSettings.Location = new System.Drawing.Point(397, 161);
+            this.btnLoadSettings.Location = new System.Drawing.Point(94, 249);
             this.btnLoadSettings.Name = "btnLoadSettings";
             this.btnLoadSettings.Size = new System.Drawing.Size(75, 23);
             this.btnLoadSettings.TabIndex = 10;
@@ -130,7 +133,7 @@ namespace FileReport47
             this.label1.AutoSize = true;
             this.label1.Location = new System.Drawing.Point(12, 13);
             this.label1.Name = "label1";
-            this.label1.Size = new System.Drawing.Size(67, 13);
+            this.label1.Size = new System.Drawing.Size(69, 13);
             this.label1.TabIndex = 11;
             this.label1.Text = "Search Path:";
             // 
@@ -148,15 +151,32 @@ namespace FileReport47
             this.label3.AutoSize = true;
             this.label3.Location = new System.Drawing.Point(12, 109);
             this.label3.Name = "label3";
-            this.label3.Size = new System.Drawing.Size(234, 13);
+            this.label3.Size = new System.Drawing.Size(251, 13);
             this.label3.TabIndex = 13;
             this.label3.Text = "File Filters (separate with semicolon, e.g. *.txt;*.doc):";
+            // 
+            // toolTip1
+            // 
+            this.toolTip1.AutoPopDelay = 10000;
+            this.toolTip1.InitialDelay = 500;
+            this.toolTip1.ReshowDelay = 100;
+            // 
+            // chkShowResults
+            // 
+            this.chkShowResults.AutoSize = true;
+            this.chkShowResults.Location = new System.Drawing.Point(15, 155);
+            this.chkShowResults.Name = "chkShowResults";
+            this.chkShowResults.Size = new System.Drawing.Size(139, 17);
+            this.chkShowResults.TabIndex = 14;
+            this.chkShowResults.Text = "Show results in real time";
+            this.chkShowResults.CheckedChanged += new System.EventHandler(this.chkShowResults_CheckedChanged);
             // 
             // MainForm
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-            this.ClientSize = new System.Drawing.Size(484, 241);
+            this.ClientSize = new System.Drawing.Size(484, 283);
+            this.Controls.Add(this.chkShowResults);
             this.Controls.Add(this.label3);
             this.Controls.Add(this.label2);
             this.Controls.Add(this.label1);
@@ -179,9 +199,6 @@ namespace FileReport47
             this.ResumeLayout(false);
             this.PerformLayout();
 
-            this.toolTip1.AutoPopDelay = 10000;
-            this.toolTip1.InitialDelay = 500;
-            this.toolTip1.ReshowDelay = 100;
         }
 
         private System.Windows.Forms.TextBox txtSearchPath;
@@ -199,5 +216,6 @@ namespace FileReport47
         private System.Windows.Forms.Label label2;
         private System.Windows.Forms.Label label3;
         private System.Windows.Forms.ToolTip toolTip1;
+        private System.Windows.Forms.CheckBox chkShowResults;
     }
 }

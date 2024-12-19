@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Collections.Concurrent;
 using FileReport47.Models;
 
 namespace FileReport47.Services
@@ -11,151 +12,189 @@ namespace FileReport47.Services
     public class FileSearchService
     {
         private CancellationTokenSource _cancellationTokenSource;
-        public event Action<int, int> ProgressUpdated;
-        
-        public async Task SearchFilesAsync(SearchParameters parameters, IProgress<(int, int)> progress)
+        private const int WRITE_BUFFER_SIZE = 100; // Écrire tous les X fichiers
+        private StreamWriter _writer;
+        private ConcurrentQueue<FileInformation> _writeBuffer;
+        private object _writeLock = new object();
+        private volatile bool _isWriting = true;
+
+        public async Task<bool> SearchFilesAsync(SearchParameters parameters, IProgress<(int matched, int total, FileInformation lastFile)> progress)
         {
+            int totalFiles = 0;
+            int matchedFiles = 0;
+            _writeBuffer = new ConcurrentQueue<FileInformation>();
+            _isWriting = true;
+
             _cancellationTokenSource = new CancellationTokenSource();
-            var foundFiles = new List<FileInformation>();
-            var processedFiles = 0;
-            var matchedFiles = 0;
+            string outputPath = ReplaceDatePatterns(parameters.OutputPath);
 
             try
             {
-                var directories = new Queue<string>();
-                directories.Enqueue(parameters.SearchPath);
-
-                while (directories.Count > 0 && !_cancellationTokenSource.Token.IsCancellationRequested)
+                // Créer le répertoire de sortie s'il n'existe pas
+                string directory = Path.GetDirectoryName(outputPath);
+                if (!string.IsNullOrEmpty(directory))
                 {
-                    string currentDir = directories.Dequeue();
-                    
+                    Directory.CreateDirectory(directory);
+                }
+
+                // Ouvrir le fichier en mode append
+                _writer = new StreamWriter(outputPath, false);
+                await _writer.WriteLineAsync(FileInformation.GetCsvHeader());
+
+                // Démarrer une tâche d'écriture en arrière-plan
+                var writeTask = Task.Run(async () =>
+                {
+                    while (_isWriting)
+                    {
+                        try
+                        {
+                            await FlushBufferAsync();
+                            await Task.Delay(100); // Attendre un peu avant la prochaine écriture
+                        }
+                        catch
+                        {
+                            // Ignorer les erreurs pendant l'écriture
+                        }
+                    }
+                });
+
+                // Démarrer la recherche
+                var searchTask = Task.Run(() =>
+                {
+                    SearchDirectory(parameters.SearchPath, parameters.FileFilters,
+                        ref totalFiles, ref matchedFiles, progress, _cancellationTokenSource.Token);
+                }, _cancellationTokenSource.Token);
+
+                // Attendre que la recherche soit terminée
+                await searchTask;
+
+                // Arrêter la tâche d'écriture et écrire les derniers fichiers
+                _isWriting = false;
+                await writeTask;
+                await FlushBufferAsync();
+
+                return !_cancellationTokenSource.Token.IsCancellationRequested;
+            }
+            catch (OperationCanceledException)
+            {
+                return false;
+            }
+            finally
+            {
+                _isWriting = false;
+                if (_writer != null)
+                {
                     try
                     {
-                        // Énumération des sous-répertoires
-                        foreach (var dir in Directory.EnumerateDirectories(currentDir))
-                        {
-                            try
-                            {
-                                directories.Enqueue(dir);
-                            }
-                            catch (UnauthorizedAccessException)
-                            {
-                                // Continue si un répertoire n'est pas accessible
-                                continue;
-                            }
-                            catch (Exception)
-                            {
-                                // Continue pour toute autre erreur de répertoire
-                                continue;
-                            }
-                        }
+                        await _writer.FlushAsync();
+                        _writer.Dispose();
+                    }
+                    catch
+                    {
+                        // Ignorer les erreurs pendant la fermeture
+                    }
+                }
+                _cancellationTokenSource?.Dispose();
+                _cancellationTokenSource = null;
+            }
+        }
 
-                        // Énumération des fichiers
-                        foreach (var file in Directory.EnumerateFiles(currentDir))
-                        {
-                            if (_cancellationTokenSource.Token.IsCancellationRequested)
-                                break;
+        private async Task FlushBufferAsync()
+        {
+            if (_writer == null || _writeBuffer.IsEmpty) return;
 
-                            processedFiles++;
+            var filesToWrite = new List<FileInformation>();
+            while (_writeBuffer.TryDequeue(out var file))
+            {
+                filesToWrite.Add(file);
+            }
 
-                            try
-                            {
-                                var fileName = Path.GetFileName(file);
-                                if (!MatchesAnyFilter(fileName, parameters.FileFilters))
-                                    continue;
+            if (filesToWrite.Count > 0)
+            {
+                lock (_writeLock)
+                {
+                    foreach (var file in filesToWrite)
+                    {
+                        _writer.WriteLine(file.ToCsvLine());
+                    }
+                }
+                await _writer.FlushAsync();
+            }
+        }
 
-                                var fileInfo = new FileInfo(file);
-                                var fileInformation = new FileInformation
-                                {
-                                    FileName = fileName,
-                                    FilePath = file,
-                                    FileSize = fileInfo.Length,
-                                    CreationTime = fileInfo.CreationTime,
-                                    LastModifiedTime = fileInfo.LastWriteTime
-                                };
+        private void SearchDirectory(string directory, List<string> filters,
+            ref int totalFiles, ref int matchedFilesCount, IProgress<(int matched, int total, FileInformation lastFile)> progress, CancellationToken cancellationToken)
+        {
+            if (cancellationToken.IsCancellationRequested)
+                return;
 
-                                foundFiles.Add(fileInformation);
-                                matchedFiles++;
-                            }
-                            catch (UnauthorizedAccessException)
-                            {
-                                continue;
-                            }
-                            catch (IOException)
-                            {
-                                continue;
-                            }
+            try
+            {
+                // Énumération des sous-répertoires
+                foreach (var dir in Directory.EnumerateDirectories(directory))
+                {
+                    if (cancellationToken.IsCancellationRequested)
+                        return;
 
-                            progress?.Report((matchedFiles, processedFiles));
-                        }
+                    try
+                    {
+                        SearchDirectory(dir, filters, ref totalFiles, ref matchedFilesCount, progress, cancellationToken);
                     }
                     catch (UnauthorizedAccessException)
                     {
-                        // Continue si le répertoire n'est pas accessible
                         continue;
                     }
                     catch (Exception)
                     {
-                        // Continue pour toute autre erreur
                         continue;
                     }
                 }
 
-                // Write results to CSV
-                if (foundFiles.Any() && !_cancellationTokenSource.Token.IsCancellationRequested)
+                // Énumération des fichiers
+                foreach (var file in Directory.EnumerateFiles(directory))
                 {
-                    await WriteToCsvAsync(foundFiles, parameters.OutputPath);
+                    if (cancellationToken.IsCancellationRequested)
+                        return;
+
+                    totalFiles++;
+
+                    try
+                    {
+                        var fileName = Path.GetFileName(file);
+                        if (!MatchesAnyFilter(fileName, filters))
+                            continue;
+
+                        var fileInfo = new FileInfo(file);
+                        var fileInformation = new FileInformation
+                        {
+                            FileName = fileName,
+                            FilePath = file,
+                            FileSize = fileInfo.Length,
+                            CreationTime = fileInfo.CreationTime,
+                            LastModifiedTime = fileInfo.LastWriteTime
+                        };
+
+                        _writeBuffer.Enqueue(fileInformation);
+                        matchedFilesCount++;
+                        progress?.Report((matchedFilesCount, totalFiles, fileInformation));
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                        continue;
+                    }
+                    catch (IOException)
+                    {
+                        continue;
+                    }
                 }
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return;
             }
             catch (Exception)
             {
-                throw;
-            }
-        }
-
-        private bool MatchesAnyFilter(string fileName, List<string> filters)
-        {
-            if (filters == null || filters.Count == 0)
-                return true;
-
-            return filters.Any(filter => 
-                filter.Contains("*") || filter.Contains("?") 
-                    ? IsWildcardMatch(fileName, filter) 
-                    : fileName.Equals(filter, StringComparison.OrdinalIgnoreCase));
-        }
-
-        private bool IsWildcardMatch(string fileName, string pattern)
-        {
-            string regexPattern = "^" + pattern
-                .Replace(".", "\\.")
-                .Replace("*", ".*")
-                .Replace("?", ".") + "$";
-
-            return System.Text.RegularExpressions.Regex.IsMatch(
-                fileName, 
-                regexPattern, 
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-        }
-
-        private async Task WriteToCsvAsync(List<FileInformation> files, string outputPath)
-        {
-            // Remplacer les motifs de date dans le chemin de sortie
-            string finalPath = ReplaceDatePatterns(outputPath);
-
-            // Créer le répertoire de sortie s'il n'existe pas
-            string directory = Path.GetDirectoryName(finalPath);
-            if (!string.IsNullOrEmpty(directory))
-            {
-                Directory.CreateDirectory(directory);
-            }
-
-            using (var writer = new StreamWriter(finalPath, false))
-            {
-                await writer.WriteLineAsync(FileInformation.GetCsvHeader());
-                foreach (var file in files)
-                {
-                    await writer.WriteLineAsync(file.ToCsvLine());
-                }
+                return;
             }
         }
 
@@ -163,13 +202,9 @@ namespace FileReport47.Services
         {
             if (string.IsNullOrEmpty(path)) return path;
 
-            // Récupérer la date actuelle
             DateTime now = DateTime.Now;
-
-            // Remplacer tous les motifs de date possibles
             string result = path;
             
-            // Chercher tous les motifs entre accolades
             while (true)
             {
                 int start = result.IndexOf('{');
@@ -186,7 +221,6 @@ namespace FileReport47.Services
                 }
                 catch (FormatException)
                 {
-                    // Si le format n'est pas valide, on laisse le motif tel quel
                     replacement = "{" + pattern + "}";
                 }
 
@@ -194,6 +228,24 @@ namespace FileReport47.Services
             }
 
             return result;
+        }
+
+        private bool MatchesAnyFilter(string fileName, List<string> filters)
+        {
+            if (filters == null || filters.Count == 0)
+                return true;
+
+            foreach (var filter in filters)
+            {
+                if (string.IsNullOrWhiteSpace(filter))
+                    continue;
+
+                var pattern = filter.Trim().Replace(".", "\\.").Replace("*", ".*").Replace("?", ".");
+                if (System.Text.RegularExpressions.Regex.IsMatch(fileName, "^" + pattern + "$", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                    return true;
+            }
+
+            return false;
         }
 
         public void CancelSearch()
